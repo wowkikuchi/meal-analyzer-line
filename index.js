@@ -2,6 +2,7 @@
 const express = require('express');
 const line = require('@line/bot-sdk');
 const axios = require('axios');
+const { calculateNutrition, evaluateNutrition } = require('./nutrition');
 const app = express();
 
 // LINEの設定
@@ -35,7 +36,7 @@ app.post('/webhook', line.middleware(config), (req, res) => {
     });
 });
 
-// 画像を分析する関数
+// 画像を分析する関数（量の推定も追加）
 async function analyzeImage(imageUrl) {
   try {
     // LINEから画像をダウンロード
@@ -49,7 +50,7 @@ async function analyzeImage(imageUrl) {
     // Base64に変換
     const base64Image = Buffer.from(imageResponse.data).toString('base64');
     
-    // Clarifai APIにリクエスト
+    // Clarifai APIにリクエスト（食品認識）
     const clarifaiResponse = await axios.post(
       `https://api.clarifai.com/v2/models/${CLARIFAI_MODEL_ID}/outputs`,
       {
@@ -73,12 +74,36 @@ async function analyzeImage(imageUrl) {
       }
     );
     
-    // 結果を解析
-    const outputs = clarifaiResponse.data.outputs[0];
-    const concepts = outputs.data.concepts || [];
+    // 一般物体認識も実行（器や量の推定用）
+    const generalResponse = await axios.post(
+      'https://api.clarifai.com/v2/models/general-image-recognition/outputs',
+      {
+        user_app_id: {
+          user_id: CLARIFAI_USER_ID,
+          app_id: CLARIFAI_APP_ID
+        },
+        inputs: [{
+          data: {
+            image: {
+              base64: base64Image
+            }
+          }
+        }]
+      },
+      {
+        headers: {
+          'Authorization': `Key ${CLARIFAI_PAT}`,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
     
-    // 信頼度の高い食べ物を取得（上位5個）
-    const detectedFoods = concepts
+    // 結果を解析
+    const foodConcepts = clarifaiResponse.data.outputs[0].data.concepts || [];
+    const generalConcepts = generalResponse.data.outputs[0].data.concepts || [];
+    
+    // 食品を検出
+    const detectedFoods = foodConcepts
       .filter(concept => concept.value > 0.5)
       .slice(0, 5)
       .map(concept => ({
@@ -86,9 +111,17 @@ async function analyzeImage(imageUrl) {
         confidence: concept.value
       }));
     
+    // 器や量の手がかりを検出
+    const servingClues = {
+      size: detectSize(generalConcepts),
+      dish: detectDishType(generalConcepts),
+      cookingMethod: detectCookingMethod([...foodConcepts, ...generalConcepts])
+    };
+    
     return {
       success: true,
       foods: detectedFoods,
+      servingData: servingClues,
       topConfidence: detectedFoods[0]?.confidence || 0
     };
     
@@ -101,107 +134,71 @@ async function analyzeImage(imageUrl) {
   }
 }
 
-// 栄養情報を推定する関数
-function estimateNutrition(foods) {
-  // 食べ物ごとの栄養データ（100gあたり）
-  const nutritionDB = {
-    // ご飯・麺類
-    'rice': { name: 'ご飯', calories: 168, protein: 2.5, carbs: 37.1, fat: 0.3 },
-    'white rice': { name: '白米', calories: 168, protein: 2.5, carbs: 37.1, fat: 0.3 },
-    'fried rice': { name: 'チャーハン', calories: 181, protein: 4.0, carbs: 29.0, fat: 5.0 },
-    'noodle': { name: '麺', calories: 140, protein: 5.0, carbs: 28.0, fat: 0.5 },
-    'ramen': { name: 'ラーメン', calories: 445, protein: 21.0, carbs: 61.0, fat: 16.0 },
-    'pasta': { name: 'パスタ', calories: 165, protein: 5.5, carbs: 32.0, fat: 0.9 },
-    'spaghetti': { name: 'スパゲッティ', calories: 165, protein: 5.5, carbs: 32.0, fat: 0.9 },
-    'udon': { name: 'うどん', calories: 105, protein: 2.6, carbs: 21.6, fat: 0.4 },
-    'soba': { name: 'そば', calories: 114, protein: 4.8, carbs: 22.0, fat: 0.7 },
-    
-    // パン類
-    'bread': { name: 'パン', calories: 264, protein: 8.0, carbs: 46.0, fat: 4.5 },
-    'sandwich': { name: 'サンドイッチ', calories: 250, protein: 10.0, carbs: 30.0, fat: 10.0 },
-    'pizza': { name: 'ピザ', calories: 266, protein: 11.0, carbs: 33.0, fat: 10.0 },
-    'hamburger': { name: 'ハンバーガー', calories: 295, protein: 15.0, carbs: 30.0, fat: 13.0 },
-    
-    // 肉類
-    'meat': { name: '肉', calories: 250, protein: 20.0, carbs: 0, fat: 18.0 },
-    'chicken': { name: '鶏肉', calories: 190, protein: 20.0, carbs: 0, fat: 11.0 },
-    'beef': { name: '牛肉', calories: 288, protein: 19.0, carbs: 0, fat: 23.0 },
-    'pork': { name: '豚肉', calories: 242, protein: 18.0, carbs: 0, fat: 18.0 },
-    'steak': { name: 'ステーキ', calories: 271, protein: 25.0, carbs: 0, fat: 19.0 },
-    
-    // 魚介類
-    'fish': { name: '魚', calories: 140, protein: 20.0, carbs: 0, fat: 6.0 },
-    'salmon': { name: 'サーモン', calories: 208, protein: 20.0, carbs: 0, fat: 13.0 },
-    'sushi': { name: '寿司', calories: 150, protein: 8.0, carbs: 20.0, fat: 3.0 },
-    'sashimi': { name: '刺身', calories: 120, protein: 20.0, carbs: 0, fat: 4.0 },
-    
-    // 野菜・サラダ
-    'vegetable': { name: '野菜', calories: 30, protein: 1.5, carbs: 6.0, fat: 0.2 },
-    'salad': { name: 'サラダ', calories: 40, protein: 2.0, carbs: 7.0, fat: 0.5 },
-    'tomato': { name: 'トマト', calories: 18, protein: 0.9, carbs: 3.9, fat: 0.2 },
-    'lettuce': { name: 'レタス', calories: 12, protein: 0.6, carbs: 2.2, fat: 0.1 },
-    
-    // デザート・フルーツ
-    'dessert': { name: 'デザート', calories: 300, protein: 4.0, carbs: 40.0, fat: 15.0 },
-    'cake': { name: 'ケーキ', calories: 350, protein: 5.0, carbs: 45.0, fat: 18.0 },
-    'ice cream': { name: 'アイスクリーム', calories: 207, protein: 3.5, carbs: 24.0, fat: 11.0 },
-    'fruit': { name: 'フルーツ', calories: 60, protein: 1.0, carbs: 15.0, fat: 0.3 },
-    'apple': { name: 'りんご', calories: 52, protein: 0.3, carbs: 14.0, fat: 0.2 },
-    
-    // その他
-    'egg': { name: '卵', calories: 155, protein: 13.0, carbs: 1.1, fat: 11.0 },
-    'cheese': { name: 'チーズ', calories: 402, protein: 25.0, carbs: 1.3, fat: 33.0 },
-    'soup': { name: 'スープ', calories: 50, protein: 2.0, carbs: 7.0, fat: 1.5 },
-    'curry': { name: 'カレー', calories: 180, protein: 6.0, carbs: 20.0, fat: 8.0 }
+// サイズを推定
+function detectSize(concepts) {
+  const sizeKeywords = {
+    '小': ['small', 'little', 'mini', 'tiny'],
+    '中': ['medium', 'regular', 'normal'],
+    '大': ['large', 'big', 'huge'],
+    '特大': ['extra large', 'jumbo', 'giant']
   };
   
-  let totalNutrition = {
-    calories: 0,
-    protein: 0,
-    carbs: 0,
-    fat: 0,
-    items: []
-  };
-  
-  // 検出された食べ物から栄養を計算
-  foods.forEach(food => {
-    const foodName = food.name.toLowerCase();
-    
-    // 完全一致を探す
-    if (nutritionDB[foodName]) {
-      const nutrition = nutritionDB[foodName];
-      totalNutrition.calories += nutrition.calories;
-      totalNutrition.protein += nutrition.protein;
-      totalNutrition.carbs += nutrition.carbs;
-      totalNutrition.fat += nutrition.fat;
-      totalNutrition.items.push(nutrition.name);
-    } else {
-      // 部分一致を探す
-      Object.keys(nutritionDB).forEach(key => {
-        if (foodName.includes(key) || key.includes(foodName)) {
-          const nutrition = nutritionDB[key];
-          totalNutrition.calories += nutrition.calories;
-          totalNutrition.protein += nutrition.protein;
-          totalNutrition.carbs += nutrition.carbs;
-          totalNutrition.fat += nutrition.fat;
-          totalNutrition.items.push(nutrition.name);
-        }
-      });
+  for (const concept of concepts) {
+    const name = concept.name.toLowerCase();
+    for (const [size, keywords] of Object.entries(sizeKeywords)) {
+      if (keywords.some(keyword => name.includes(keyword))) {
+        return size;
+      }
     }
-  });
-  
-  // 何も検出されなかった場合のデフォルト値
-  if (totalNutrition.calories === 0) {
-    totalNutrition = {
-      calories: 300,
-      protein: 15,
-      carbs: 40,
-      fat: 10,
-      items: ['食事']
-    };
   }
   
-  return totalNutrition;
+  return '中'; // デフォルト
+}
+
+// 器のタイプを検出
+function detectDishType(concepts) {
+  const dishKeywords = {
+    '茶碗': ['rice bowl', 'bowl', 'chawan'],
+    '丼': ['donburi', 'large bowl'],
+    '皿': ['plate', 'dish'],
+    'プレート': ['plate', 'platter'],
+    'ボウル': ['bowl', 'soup bowl']
+  };
+  
+  for (const concept of concepts) {
+    const name = concept.name.toLowerCase();
+    for (const [dish, keywords] of Object.entries(dishKeywords)) {
+      if (keywords.some(keyword => name.includes(keyword))) {
+        return dish;
+      }
+    }
+  }
+  
+  return '皿'; // デフォルト
+}
+
+// 調理方法を検出
+function detectCookingMethod(concepts) {
+  const cookingKeywords = {
+    '生': ['raw', 'fresh', 'sashimi'],
+    '茹で': ['boiled', 'boil'],
+    '蒸し': ['steamed', 'steam'],
+    '焼き': ['grilled', 'roasted', 'baked'],
+    '炒め': ['stir-fried', 'fried', 'sauteed'],
+    '揚げ': ['deep-fried', 'tempura', 'fried'],
+    '煮込み': ['stewed', 'simmered', 'curry']
+  };
+  
+  for (const concept of concepts) {
+    const name = concept.name.toLowerCase();
+    for (const [method, keywords] of Object.entries(cookingKeywords)) {
+      if (keywords.some(keyword => name.includes(keyword))) {
+        return method;
+      }
+    }
+  }
+  
+  return '生'; // デフォルト
 }
 
 // メッセージが来たときの処理
@@ -217,21 +214,28 @@ async function handleEvent(event) {
     let replyText = '';
     
     if (userMessage.includes('使い方') || userMessage.includes('help')) {
-      replyText = `🍽️ MealAnalyzerの使い方
+      replyText = `🍽️ MealAnalyzer 高精度版の使い方
 
-1. 食事の写真を送ってね！
-2. AIが食べ物を認識するよ！
-3. カロリーと栄養を教えるよ！
+📸 食事の写真を送ると：
+1. AIが食品を認識
+2. 量を自動推定
+3. 調理方法を判定
+4. 詳細な栄養計算
+5. バランス評価
 
-📸 写真を送ってみてね！
+🎯 対応している食品：
+• 主食（ご飯、パン、麺類）
+• 主菜（肉、魚、卵、豆腐）
+• 副菜（野菜、サラダ）
+• 汁物（みそ汁、スープ）
+• その他多数！
 
-💡 認識できる食べ物の例：
-・ご飯、パン、麺類
-・肉、魚、野菜
-・デザート、フルーツ
-・和食、洋食、中華など`;
+💡 より正確な結果のコツ：
+• 料理全体が写るように撮影
+• 明るい場所で撮影
+• 箸やスプーンを一緒に撮ると量の推定精度UP！`;
     } else {
-      replyText = '食事の写真を送ってください！AIが栄養情報を分析します 📸🤖';
+      replyText = '食事の写真を送ってください！高精度AIが詳細な栄養情報を分析します 📸🤖';
     }
     
     return client.replyMessage(event.replyToken, {
@@ -245,7 +249,7 @@ async function handleEvent(event) {
     // 「分析中...」メッセージ
     await client.pushMessage(event.source.userId, {
       type: 'text',
-      text: '🔍 AIが画像を分析中... しばらくお待ちください！'
+      text: '🔍 高精度AIが画像を分析中...\n📊 栄養データベースと照合中...\n⏳ もう少しお待ちください！'
     });
     
     // 画像URLを取得
@@ -261,30 +265,45 @@ async function handleEvent(event) {
       });
     }
     
-    // 栄養情報を推定
-    const nutrition = estimateNutrition(analysisResult.foods);
+    // 栄養情報を計算（高精度版）
+    const nutrition = calculateNutrition(
+      analysisResult.foods,
+      analysisResult.servingData.cookingMethod,
+      analysisResult.servingData
+    );
     
-    // 検出された食べ物のリスト
-    const foodsList = analysisResult.foods
-      .map((food, index) => `${index + 1}. ${food.name} (${Math.round(food.confidence * 100)}%)`)
-      .join('\n');
+    // 栄養バランスを評価
+    const evaluation = evaluateNutrition(nutrition);
+    
+    // 詳細な結果を作成
+    const detailsText = nutrition.details
+      .map(item => `${item.name}(${item.serving}g)`)
+      .join('、');
     
     // 結果を返信
     const replyMessage = {
       type: 'flex',
-      altText: '栄養分析結果',
+      altText: '詳細栄養分析結果',
       contents: {
         type: 'bubble',
+        size: 'mega',
         header: {
           type: 'box',
           layout: 'vertical',
           contents: [
             {
               type: 'text',
-              text: '🍽️ AI栄養分析結果',
+              text: '🍽️ 高精度栄養分析結果',
               weight: 'bold',
               size: 'xl',
               color: '#1DB446'
+            },
+            {
+              type: 'text',
+              text: `バランススコア: ${evaluation.score}点`,
+              size: 'sm',
+              color: '#FF5551',
+              margin: 'sm'
             }
           ]
         },
@@ -294,15 +313,16 @@ async function handleEvent(event) {
           contents: [
             {
               type: 'text',
-              text: '🤖 検出された食べ物',
+              text: '📋 検出された食品と推定量',
               weight: 'bold',
               margin: 'md'
             },
             {
               type: 'text',
-              text: nutrition.items.join('、') || '食事',
+              text: detailsText || '食事',
               wrap: true,
               color: '#666666',
+              size: 'sm',
               margin: 'sm'
             },
             {
@@ -310,17 +330,42 @@ async function handleEvent(event) {
               margin: 'lg'
             },
             {
-              type: 'text',
-              text: `推定カロリー: ${Math.round(nutrition.calories)}kcal`,
+              type: 'box',
+              layout: 'horizontal',
               margin: 'lg',
-              size: 'lg',
+              contents: [
+                {
+                  type: 'text',
+                  text: '総カロリー',
+                  size: 'sm',
+                  color: '#555555',
+                  flex: 1
+                },
+                {
+                  type: 'text',
+                  text: `${nutrition.calories}kcal`,
+                  size: 'lg',
+                  weight: 'bold',
+                  color: '#FF5551',
+                  align: 'end',
+                  flex: 1
+                }
+              ]
+            },
+            {
+              type: 'separator',
+              margin: 'lg'
+            },
+            {
+              type: 'text',
+              text: '📊 栄養素詳細',
               weight: 'bold',
-              color: '#FF5551'
+              margin: 'lg'
             },
             {
               type: 'box',
               layout: 'horizontal',
-              margin: 'lg',
+              margin: 'md',
               contents: [
                 {
                   type: 'box',
@@ -329,33 +374,15 @@ async function handleEvent(event) {
                     {
                       type: 'text',
                       text: 'たんぱく質',
-                      size: 'sm',
+                      size: 'xs',
                       color: '#555555'
                     },
                     {
                       type: 'text',
-                      text: `${Math.round(nutrition.protein)}g`,
+                      text: `${nutrition.protein}g`,
                       size: 'sm',
-                      weight: 'bold'
-                    }
-                  ],
-                  flex: 1
-                },
-                {
-                  type: 'box',
-                  layout: 'vertical',
-                  contents: [
-                    {
-                      type: 'text',
-                      text: '炭水化物',
-                      size: 'sm',
-                      color: '#555555'
-                    },
-                    {
-                      type: 'text',
-                      text: `${Math.round(nutrition.carbs)}g`,
-                      size: 'sm',
-                      weight: 'bold'
+                      weight: 'bold',
+                      margin: 'xs'
                     }
                   ],
                   flex: 1
@@ -367,14 +394,102 @@ async function handleEvent(event) {
                     {
                       type: 'text',
                       text: '脂質',
-                      size: 'sm',
+                      size: 'xs',
                       color: '#555555'
                     },
                     {
                       type: 'text',
-                      text: `${Math.round(nutrition.fat)}g`,
+                      text: `${nutrition.fat}g`,
                       size: 'sm',
-                      weight: 'bold'
+                      weight: 'bold',
+                      margin: 'xs'
+                    }
+                  ],
+                  flex: 1
+                },
+                {
+                  type: 'box',
+                  layout: 'vertical',
+                  contents: [
+                    {
+                      type: 'text',
+                      text: '炭水化物',
+                      size: 'xs',
+                      color: '#555555'
+                    },
+                    {
+                      type: 'text',
+                      text: `${nutrition.carbs}g`,
+                      size: 'sm',
+                      weight: 'bold',
+                      margin: 'xs'
+                    }
+                  ],
+                  flex: 1
+                }
+              ]
+            },
+            {
+              type: 'box',
+              layout: 'horizontal',
+              margin: 'md',
+              contents: [
+                {
+                  type: 'box',
+                  layout: 'vertical',
+                  contents: [
+                    {
+                      type: 'text',
+                      text: '食物繊維',
+                      size: 'xs',
+                      color: '#555555'
+                    },
+                    {
+                      type: 'text',
+                      text: `${nutrition.fiber}g`,
+                      size: 'sm',
+                      weight: 'bold',
+                      margin: 'xs'
+                    }
+                  ],
+                  flex: 1
+                },
+                {
+                  type: 'box',
+                  layout: 'vertical',
+                  contents: [
+                    {
+                      type: 'text',
+                      text: '食塩相当量',
+                      size: 'xs',
+                      color: '#555555'
+                    },
+                    {
+                      type: 'text',
+                      text: `${nutrition.salt}g`,
+                      size: 'sm',
+                      weight: 'bold',
+                      margin: 'xs'
+                    }
+                  ],
+                  flex: 1
+                },
+                {
+                  type: 'box',
+                  layout: 'vertical',
+                  contents: [
+                    {
+                      type: 'text',
+                      text: '調理法',
+                      size: 'xs',
+                      color: '#555555'
+                    },
+                    {
+                      type: 'text',
+                      text: analysisResult.servingData.cookingMethod,
+                      size: 'sm',
+                      weight: 'bold',
+                      margin: 'xs'
                     }
                   ],
                   flex: 1
@@ -387,18 +502,16 @@ async function handleEvent(event) {
             },
             {
               type: 'text',
-              text: '📊 詳細な検出結果',
-              margin: 'lg',
-              size: 'sm',
-              color: '#666666'
+              text: '💯 栄養バランス評価',
+              weight: 'bold',
+              margin: 'lg'
             },
             {
               type: 'text',
-              text: foodsList || '食べ物を検出中...',
-              margin: 'sm',
-              size: 'xs',
-              color: '#999999',
-              wrap: true
+              text: evaluation.overall,
+              wrap: true,
+              size: 'sm',
+              margin: 'sm'
             }
           ]
         },
@@ -408,7 +521,7 @@ async function handleEvent(event) {
           contents: [
             {
               type: 'text',
-              text: `🤖 AI信頼度: ${Math.round(analysisResult.topConfidence * 100)}%`,
+              text: `🤖 AI信頼度: ${Math.round(analysisResult.topConfidence * 100)}% | 📊 日本食品標準成分表準拠`,
               size: 'xs',
               color: '#aaaaaa',
               align: 'center'
@@ -428,5 +541,5 @@ async function handleEvent(event) {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
-  console.log('MealAnalyzer Bot with Clarifai AI is ready! 🍽️🤖');
+  console.log('MealAnalyzer Bot with Advanced Nutrition Analysis is ready! 🍽️🤖📊');
 });
