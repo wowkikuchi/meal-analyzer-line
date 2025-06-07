@@ -36,6 +36,49 @@ app.post('/webhook', line.middleware(config), (req, res) => {
     });
 });
 
+// 料理パターンを検出する関数
+function detectDishPattern(foods, generalConcepts) {
+  // カレーパターン
+  const curryPattern = ['rice', 'beef', 'meat', 'curry', 'sauce', 'gravy'];
+  const hasCurryIngredients = foods.some(f => 
+    curryPattern.includes(f.name.toLowerCase())
+  );
+  
+  const hasRice = foods.some(f => 
+    f.name.toLowerCase().includes('rice')
+  );
+  
+  const hasMeat = foods.some(f => 
+    ['beef', 'pork', 'chicken', 'meat'].includes(f.name.toLowerCase())
+  );
+  
+  const hasSauce = generalConcepts.some(c => 
+    ['sauce', 'gravy', 'curry', 'stew'].includes(c.name.toLowerCase())
+  );
+  
+  // カレーライスと判定
+  if (hasRice && (hasMeat || hasSauce)) {
+    return 'curry_rice';
+  }
+  
+  // ラーメンパターン
+  const ramenPattern = ['noodle', 'soup', 'ramen', 'broth'];
+  const hasRamenIngredients = foods.some(f => 
+    ramenPattern.includes(f.name.toLowerCase())
+  );
+  
+  if (hasRamenIngredients) {
+    return 'ramen';
+  }
+  
+  // 丼物パターン
+  if (hasRice && hasMeat && !hasSauce) {
+    return 'donburi';
+  }
+  
+  return null;
+}
+
 // 画像を分析する関数（量の推定も追加）
 async function analyzeImage(imageUrl) {
   try {
@@ -111,6 +154,24 @@ async function analyzeImage(imageUrl) {
         confidence: concept.value
       }));
     
+    // 料理パターンを検出
+    const dishPattern = detectDishPattern(detectedFoods, generalConcepts);
+    
+    // パターンに基づいて食品リストを調整
+    if (dishPattern === 'curry_rice') {
+      // カレーライスとして統合
+      detectedFoods.unshift({
+        name: 'curry rice',
+        confidence: 0.95
+      });
+      // 重複を避けるため、個別の材料の信頼度を下げる
+      detectedFoods.forEach((food, index) => {
+        if (index > 0) {
+          food.confidence *= 0.3;
+        }
+      });
+    }
+    
     // 器や量の手がかりを検出
     const servingClues = {
       size: detectSize(generalConcepts),
@@ -118,11 +179,17 @@ async function analyzeImage(imageUrl) {
       cookingMethod: detectCookingMethod([...foodConcepts, ...generalConcepts])
     };
     
+    // カレーの場合は調理方法を煮込みに
+    if (dishPattern === 'curry_rice') {
+      servingClues.cookingMethod = '煮込み';
+    }
+    
     return {
       success: true,
-      foods: detectedFoods,
+      foods: detectedFoods.filter(f => f.confidence > 0.3), // 低信頼度を除外
       servingData: servingClues,
-      topConfidence: detectedFoods[0]?.confidence || 0
+      topConfidence: detectedFoods[0]?.confidence || 0,
+      dishPattern: dishPattern
     };
     
   } catch (error) {
@@ -139,7 +206,7 @@ function detectSize(concepts) {
   const sizeKeywords = {
     '小': ['small', 'little', 'mini', 'tiny'],
     '中': ['medium', 'regular', 'normal'],
-    '大': ['large', 'big', 'huge'],
+    '大': ['large', 'big', 'huge', 'bowl'],
     '特大': ['extra large', 'jumbo', 'giant']
   };
   
@@ -165,6 +232,15 @@ function detectDishType(concepts) {
     'ボウル': ['bowl', 'soup bowl']
   };
   
+  // plateが検出されたら皿と判定
+  const hasPlate = concepts.some(c => 
+    c.name.toLowerCase().includes('plate') && c.value > 0.5
+  );
+  
+  if (hasPlate) {
+    return '皿';
+  }
+  
   for (const concept of concepts) {
     const name = concept.name.toLowerCase();
     for (const [dish, keywords] of Object.entries(dishKeywords)) {
@@ -186,7 +262,7 @@ function detectCookingMethod(concepts) {
     '焼き': ['grilled', 'roasted', 'baked'],
     '炒め': ['stir-fried', 'fried', 'sauteed'],
     '揚げ': ['deep-fried', 'tempura', 'fried'],
-    '煮込み': ['stewed', 'simmered', 'curry']
+    '煮込み': ['stewed', 'simmered', 'curry', 'sauce', 'gravy']
   };
   
   for (const concept of concepts) {
@@ -217,23 +293,22 @@ async function handleEvent(event) {
       replyText = `🍽️ MealAnalyzer 高精度版の使い方
 
 📸 食事の写真を送ると：
-1. AIが食品を認識
+1. AIが料理を認識（カレー、ラーメンなど）
 2. 量を自動推定
 3. 調理方法を判定
 4. 詳細な栄養計算
 5. バランス評価
 
-🎯 対応している食品：
-• 主食（ご飯、パン、麺類）
-• 主菜（肉、魚、卵、豆腐）
-• 副菜（野菜、サラダ）
-• 汁物（みそ汁、スープ）
+🎯 対応している料理：
+• カレーライス、牛丼、親子丼
+• ラーメン、うどん、そば
+• 定食、お弁当
 • その他多数！
 
 💡 より正確な結果のコツ：
 • 料理全体が写るように撮影
 • 明るい場所で撮影
-• 箸やスプーンを一緒に撮ると量の推定精度UP！`;
+• 器全体を含めると量の推定精度UP！`;
     } else {
       replyText = '食事の写真を送ってください！高精度AIが詳細な栄養情報を分析します 📸🤖';
     }
@@ -279,6 +354,12 @@ async function handleEvent(event) {
     const detailsText = nutrition.details
       .map(item => `${item.name}(${item.serving}g)`)
       .join('、');
+    
+    // 料理パターンが検出された場合のメッセージ
+    let dishMessage = '';
+    if (analysisResult.dishPattern === 'curry_rice') {
+      dishMessage = '🍛 カレーライスとして分析しました！\n';
+    }
     
     // 結果を返信
     const replyMessage = {
