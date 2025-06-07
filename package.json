@@ -1,0 +1,17 @@
+{
+  "name": "meal-analyzer",
+  "version": "1.0.0",
+  "description": "LINE bot for meal nutrition analysis",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "@line/bot-sdk": "^7.5.2",
+    "axios": "^1.4.0"
+  },
+  "engines": {
+    "node": "18.x"
+  }
+}
