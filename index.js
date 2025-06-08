@@ -139,43 +139,56 @@ async function analyzeByClarifai(base64Image) {
 function detectJapaneseDish(googleResults, clarifaiResults) {
   const dishPatterns = {
     'からあげ': {
-      keywords: ['fried chicken', 'karaage', '唐揚げ', 'japanese fried chicken'],
+      keywords: ['fried chicken', 'karaage', '唐揚げ', 'japanese fried chicken', 'chicken nugget'],
+      combinations: [['chicken', 'fried'], ['poultry', 'fried']],
       score: 0
     },
     '牛丼': {
-      keywords: ['beef bowl', 'gyudon', '牛丼', 'japanese beef bowl', 'rice bowl'],
+      keywords: ['beef bowl', 'gyudon', '牛丼', 'japanese beef bowl', 'rice bowl', 'beef rice'],
+      combinations: [['beef', 'rice', 'bowl'], ['meat', 'rice', 'japanese'], ['beef', 'onion', 'rice']],
       score: 0
     },
     'カレーライス': {
-      keywords: ['curry', 'curry rice', 'japanese curry', 'curry and rice'],
+      keywords: ['curry', 'curry rice', 'japanese curry', 'curry and rice', 'beef curry'],
+      combinations: [['curry', 'rice'], ['curry', 'beef'], ['curry', 'meat', 'rice']],
       score: 0
     },
     'ラーメン': {
-      keywords: ['ramen', 'noodle soup', 'japanese noodles'],
+      keywords: ['ramen', 'noodle soup', 'japanese noodles', 'noodle', 'soup noodle'],
+      combinations: [['noodle', 'soup'], ['ramen'], ['japanese', 'noodle']],
       score: 0
     },
     '天ぷら': {
-      keywords: ['tempura', 'fried shrimp', 'japanese fried food'],
+      keywords: ['tempura', 'fried shrimp', 'japanese fried food', 'battered'],
+      combinations: [['shrimp', 'fried'], ['tempura'], ['batter', 'fried']],
       score: 0
     },
     'とんかつ': {
-      keywords: ['tonkatsu', 'pork cutlet', 'breaded pork'],
+      keywords: ['tonkatsu', 'pork cutlet', 'breaded pork', 'fried pork'],
+      combinations: [['pork', 'fried'], ['pork', 'breaded'], ['cutlet']],
       score: 0
     },
     '親子丼': {
-      keywords: ['oyakodon', 'chicken and egg bowl', 'rice bowl'],
+      keywords: ['oyakodon', 'chicken and egg bowl', 'rice bowl', 'chicken egg rice'],
+      combinations: [['chicken', 'egg', 'rice'], ['chicken', 'egg', 'bowl']],
       score: 0
     },
     'お好み焼き': {
-      keywords: ['okonomiyaki', 'japanese pancake', 'savory pancake'],
+      keywords: ['okonomiyaki', 'japanese pancake', 'savory pancake', 'cabbage pancake'],
+      combinations: [['pancake', 'japanese'], ['cabbage', 'pancake']],
       score: 0
     }
   };
+  
+  // 検出された単語を収集
+  const detectedWords = new Set();
   
   // Google Visionのラベルをチェック
   if (googleResults) {
     googleResults.labels.forEach(label => {
       const labelName = label.description.toLowerCase();
+      detectedWords.add(labelName);
+      
       Object.keys(dishPatterns).forEach(dish => {
         dishPatterns[dish].keywords.forEach(keyword => {
           if (labelName.includes(keyword.toLowerCase())) {
@@ -189,6 +202,8 @@ function detectJapaneseDish(googleResults, clarifaiResults) {
     googleResults.webEntities.forEach(entity => {
       if (entity.description) {
         const entityName = entity.description.toLowerCase();
+        detectedWords.add(entityName);
+        
         Object.keys(dishPatterns).forEach(dish => {
           dishPatterns[dish].keywords.forEach(keyword => {
             if (entityName.includes(keyword.toLowerCase())) {
@@ -198,11 +213,20 @@ function detectJapaneseDish(googleResults, clarifaiResults) {
         });
       }
     });
+    
+    // オブジェクト検出結果もチェック
+    googleResults.objects.forEach(obj => {
+      if (obj.name) {
+        detectedWords.add(obj.name.toLowerCase());
+      }
+    });
   }
   
   // Clarifaiの結果もチェック
   clarifaiResults.forEach(concept => {
     const conceptName = concept.name.toLowerCase();
+    detectedWords.add(conceptName);
+    
     Object.keys(dishPatterns).forEach(dish => {
       dishPatterns[dish].keywords.forEach(keyword => {
         if (conceptName.includes(keyword.toLowerCase())) {
@@ -212,9 +236,27 @@ function detectJapaneseDish(googleResults, clarifaiResults) {
     });
   });
   
+  // 組み合わせチェック（新機能）
+  const wordsArray = Array.from(detectedWords);
+  Object.keys(dishPatterns).forEach(dish => {
+    if (dishPatterns[dish].combinations) {
+      dishPatterns[dish].combinations.forEach(combination => {
+        // 全ての単語が検出されているかチェック
+        const allFound = combination.every(word => 
+          wordsArray.some(detected => detected.includes(word))
+        );
+        
+        if (allFound) {
+          dishPatterns[dish].score += 50; // 組み合わせボーナス
+          console.log(`組み合わせ検出: ${dish} - ${combination.join(', ')}`);
+        }
+      });
+    }
+  });
+  
   // 最高スコアの料理を返す
   let bestDish = null;
-  let highestScore = 30; // 閾値
+  let highestScore = 25; // 閾値を下げて感度向上
   
   Object.keys(dishPatterns).forEach(dish => {
     if (dishPatterns[dish].score > highestScore) {
@@ -224,6 +266,7 @@ function detectJapaneseDish(googleResults, clarifaiResults) {
   });
   
   console.log('料理スコア:', dishPatterns);
+  console.log('検出された単語:', wordsArray);
   console.log('検出された料理:', bestDish);
   
   return bestDish;
