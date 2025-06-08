@@ -678,12 +678,13 @@ function calculateNutrition(foods, cookingMethod = '生', servingData = {}) {
   return totalNutrition;
 }
 
-// 栄養バランスの評価
+// 栄養バランスの評価と150文字程度のアドバイス生成
 function evaluateNutrition(nutrition) {
   const evaluation = {
     overall: '',
     details: [],
-    score: 0
+    score: 0,
+    advice: '' // 新しく追加
   };
   
   // 1食あたりの推奨値（成人）
@@ -699,6 +700,7 @@ function evaluateNutrition(nutrition) {
   // 各栄養素の評価
   let totalScore = 0;
   let scoreCount = 0;
+  const issues = [];
   
   Object.keys(recommendations).forEach(nutrient => {
     const value = nutrition[nutrient];
@@ -711,10 +713,12 @@ function evaluateNutrition(nutrition) {
       const score = (value / range.min) * 100;
       totalScore += score;
       evaluation.details.push(`${nutrient}: 不足 ⚠️`);
+      issues.push({ type: 'low', nutrient, value, min: range.min });
     } else {
       const score = Math.max(0, 100 - ((value - range.max) / range.max) * 100);
       totalScore += score;
       evaluation.details.push(`${nutrient}: 過多 ⚠️`);
+      issues.push({ type: 'high', nutrient, value, max: range.max });
     }
     scoreCount++;
   });
@@ -732,7 +736,87 @@ function evaluateNutrition(nutrition) {
     evaluation.overall = 'バランスの改善が必要です 📝';
   }
   
+  // 150文字程度のアドバイス生成
+  evaluation.advice = generateNutritionAdvice(nutrition, issues, evaluation.score);
+  
   return evaluation;
+}
+
+// 150文字程度の栄養アドバイス生成関数
+function generateNutritionAdvice(nutrition, issues, score) {
+  let advice = '';
+  
+  // スコアに基づく基本メッセージ
+  if (score >= 80) {
+    advice = 'バランス良好です！';
+  } else if (score >= 60) {
+    advice = 'まずまずの栄養バランスです。';
+  } else {
+    advice = '栄養バランスの改善が必要です。';
+  }
+  
+  // 主要な問題点を特定してアドバイス
+  const priorityIssues = issues.slice(0, 2); // 上位2つの問題
+  
+  priorityIssues.forEach(issue => {
+    switch(issue.nutrient) {
+      case 'protein':
+        if (issue.type === 'low') {
+          advice += '肉・魚・卵などでたんぱく質を追加しましょう。';
+        } else {
+          advice += 'たんぱく質が多めです。野菜を増やしてバランスを。';
+        }
+        break;
+        
+      case 'fat':
+        if (issue.type === 'low') {
+          advice += '良質な脂質（魚・ナッツ等）を取り入れましょう。';
+        } else {
+          advice += '脂質過多です。調理法を見直し、揚げ物を控えましょう。';
+        }
+        break;
+        
+      case 'carbs':
+        if (issue.type === 'low') {
+          advice += '炭水化物不足です。ごはんやパンを適量摂りましょう。';
+        } else {
+          advice += '炭水化物多めです。野菜やたんぱく質を増やしましょう。';
+        }
+        break;
+        
+      case 'fiber':
+        if (issue.type === 'low') {
+          advice += '野菜や海藻で食物繊維を増やしましょう。';
+        }
+        break;
+        
+      case 'salt':
+        if (issue.type === 'high') {
+          advice += '塩分過多です。薄味を心がけ、出汁を活用しましょう。';
+        }
+        break;
+        
+      case 'calories':
+        if (issue.type === 'low') {
+          advice += 'カロリー不足です。適量を心がけましょう。';
+        } else {
+          advice += 'カロリー過多です。量を調整しましょう。';
+        }
+        break;
+    }
+  });
+  
+  // 問題がない場合の一般的なアドバイス
+  if (issues.length === 0) {
+    advice += '現在の食事バランスを維持し、規則正しい食生活を続けましょう。水分補給も忘れずに。';
+  }
+  
+  // 150文字程度に調整
+  if (advice.length > 150) {
+    advice = advice.substring(0, 147) + '...';
+  }
+  
+  return advice;
 }
 
 module.exports = {
@@ -740,5 +824,6 @@ module.exports = {
   evaluateNutrition,
   estimateServing,
   nutritionDatabase,
-  cookingMethods
+  cookingMethods,
+  generateNutritionAdvice
 };
