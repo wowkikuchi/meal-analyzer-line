@@ -182,20 +182,30 @@ function detectJapaneseDish(googleResults, clarifaiResults) {
     return 'ラーメン';
   }
   
-  // 2. カレー判定（キーワード追加）
-  if (hasWord(['curry', 'カレー', 'japanese curry', 'curry rice', 'goulash', 'chili']) ||
-      (hasWord(['curry']) && hasWord(['rice'])) ||
-      (hasWord(['goulash', 'chili']) && hasWord(['rice']))) {
+  // 2. カレー判定（curryという単語がある場合のみ）
+  if (hasWord(['curry', 'カレー', 'japanese curry', 'curry rice'])) {
     console.log('判定: カレーライス');
     return 'カレーライス';
   }
   
-  // 3. 牛丼判定（カレー系の単語を除外）
+  // 3. 牛丼判定（beef + rice の組み合わせ）
   if (hasWord(['gyudon', '牛丼', 'beef bowl']) ||
-      (hasWord(['beef', '牛肉']) && hasWord(['rice', 'ご飯', 'bowl']) && 
-       !hasWord(['curry', 'noodle', 'goulash', 'chili']))) {
+      (hasWord(['beef', '牛肉', 'meat']) && hasWord(['rice', 'ご飯']) && 
+       hasWord(['onion', 'bowl']) && !hasWord(['curry', 'noodle']))) {
     console.log('判定: 牛丼');
     return '牛丼';
+  }
+  
+  // 3.5. goulashやchiliが検出された場合の追加判定
+  if ((hasWord(['goulash', 'chili']) && hasWord(['rice']))) {
+    // 他の特徴も確認
+    if (hasWord(['yellow', 'sauce', 'spicy'])) {
+      console.log('判定: カレーライス（goulash/chili）');
+      return 'カレーライス';
+    } else if (hasWord(['beef', 'onion', 'bowl'])) {
+      console.log('判定: 牛丼（goulash/chili誤検出）');
+      return '牛丼';
+    }
   }
   
   // 4. からあげ判定
