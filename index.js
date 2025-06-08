@@ -73,8 +73,8 @@ async function analyzeByGoogleVision(base64Image) {
               maxResults: 5
             },
             {
-              type: 'OBJECT_LOCALIZATION',
-              maxResults: 10
+              type: 'TEXT_DETECTION',
+              maxResults: 5
             }
           ]
         }]
@@ -87,7 +87,7 @@ async function analyzeByGoogleVision(base64Image) {
     return {
       labels: result.labelAnnotations || [],
       webEntities: result.webDetection?.webEntities || [],
-      objects: result.localizedObjectAnnotations || []
+      text: result.textAnnotations || []
     };
     
   } catch (error) {
@@ -135,141 +135,99 @@ async function analyzeByClarifai(base64Image) {
   }
 }
 
-// 日本料理を検出する関数
+// 日本料理を検出する関数（シンプル版）
 function detectJapaneseDish(googleResults, clarifaiResults) {
-  const dishPatterns = {
-    'からあげ': {
-      keywords: ['fried chicken', 'karaage', '唐揚げ', 'japanese fried chicken', 'chicken nugget'],
-      combinations: [['chicken', 'fried'], ['poultry', 'fried']],
-      score: 0
-    },
-    '牛丼': {
-      keywords: ['beef bowl', 'gyudon', '牛丼', 'japanese beef bowl', 'rice bowl', 'beef rice'],
-      combinations: [['beef', 'rice', 'bowl'], ['meat', 'rice', 'japanese'], ['beef', 'onion', 'rice']],
-      score: 0
-    },
-    'カレーライス': {
-      keywords: ['curry', 'curry rice', 'japanese curry', 'curry and rice', 'beef curry'],
-      combinations: [['curry', 'rice'], ['curry', 'beef'], ['curry', 'meat', 'rice']],
-      score: 0
-    },
-    'ラーメン': {
-      keywords: ['ramen', 'noodle soup', 'japanese noodles', 'noodle', 'soup noodle'],
-      combinations: [['noodle', 'soup'], ['ramen'], ['japanese', 'noodle']],
-      score: 0
-    },
-    '天ぷら': {
-      keywords: ['tempura', 'fried shrimp', 'japanese fried food', 'battered'],
-      combinations: [['shrimp', 'fried'], ['tempura'], ['batter', 'fried']],
-      score: 0
-    },
-    'とんかつ': {
-      keywords: ['tonkatsu', 'pork cutlet', 'breaded pork', 'fried pork'],
-      combinations: [['pork', 'fried'], ['pork', 'breaded'], ['cutlet']],
-      score: 0
-    },
-    '親子丼': {
-      keywords: ['oyakodon', 'chicken and egg bowl', 'rice bowl', 'chicken egg rice'],
-      combinations: [['chicken', 'egg', 'rice'], ['chicken', 'egg', 'bowl']],
-      score: 0
-    },
-    'お好み焼き': {
-      keywords: ['okonomiyaki', 'japanese pancake', 'savory pancake', 'cabbage pancake'],
-      combinations: [['pancake', 'japanese'], ['cabbage', 'pancake']],
-      score: 0
-    }
-  };
+  // 検出された全ての単語を収集
+  const allWords = [];
   
-  // 検出された単語を収集
-  const detectedWords = new Set();
-  
-  // Google Visionのラベルをチェック
+  // Google Visionから単語収集
   if (googleResults) {
     googleResults.labels.forEach(label => {
-      const labelName = label.description.toLowerCase();
-      detectedWords.add(labelName);
-      
-      Object.keys(dishPatterns).forEach(dish => {
-        dishPatterns[dish].keywords.forEach(keyword => {
-          if (labelName.includes(keyword.toLowerCase())) {
-            dishPatterns[dish].score += label.score * 100;
-          }
-        });
-      });
+      allWords.push(label.description.toLowerCase());
     });
     
-    // Web検出結果もチェック
     googleResults.webEntities.forEach(entity => {
       if (entity.description) {
-        const entityName = entity.description.toLowerCase();
-        detectedWords.add(entityName);
-        
-        Object.keys(dishPatterns).forEach(dish => {
-          dishPatterns[dish].keywords.forEach(keyword => {
-            if (entityName.includes(keyword.toLowerCase())) {
-              dishPatterns[dish].score += entity.score * 50;
-            }
-          });
-        });
+        allWords.push(entity.description.toLowerCase());
       }
     });
     
-    // オブジェクト検出結果もチェック
-    googleResults.objects.forEach(obj => {
-      if (obj.name) {
-        detectedWords.add(obj.name.toLowerCase());
+    // テキスト検出結果も追加
+    googleResults.text.forEach(text => {
+      if (text.description) {
+        allWords.push(text.description.toLowerCase());
       }
     });
   }
   
-  // Clarifaiの結果もチェック
+  // Clarifaiから単語収集
   clarifaiResults.forEach(concept => {
-    const conceptName = concept.name.toLowerCase();
-    detectedWords.add(conceptName);
-    
-    Object.keys(dishPatterns).forEach(dish => {
-      dishPatterns[dish].keywords.forEach(keyword => {
-        if (conceptName.includes(keyword.toLowerCase())) {
-          dishPatterns[dish].score += concept.value * 80;
-        }
-      });
-    });
+    allWords.push(concept.name.toLowerCase());
   });
   
-  // 組み合わせチェック（新機能）
-  const wordsArray = Array.from(detectedWords);
-  Object.keys(dishPatterns).forEach(dish => {
-    if (dishPatterns[dish].combinations) {
-      dishPatterns[dish].combinations.forEach(combination => {
-        // 全ての単語が検出されているかチェック
-        const allFound = combination.every(word => 
-          wordsArray.some(detected => detected.includes(word))
-        );
-        
-        if (allFound) {
-          dishPatterns[dish].score += 50; // 組み合わせボーナス
-          console.log(`組み合わせ検出: ${dish} - ${combination.join(', ')}`);
-        }
-      });
-    }
-  });
+  console.log('検出された全単語:', allWords);
   
-  // 最高スコアの料理を返す
-  let bestDish = null;
-  let highestScore = 25; // 閾値を下げて感度向上
+  // 単語の出現をチェックする関数
+  const hasWord = (words) => {
+    return words.some(word => allWords.some(detected => detected.includes(word)));
+  };
   
-  Object.keys(dishPatterns).forEach(dish => {
-    if (dishPatterns[dish].score > highestScore) {
-      highestScore = dishPatterns[dish].score;
-      bestDish = dish;
-    }
-  });
+  // 優先順位付き判定（上から順にチェック）
   
-  console.log('料理スコア:', dishPatterns);
-  console.log('検出された単語:', wordsArray);
-  console.log('検出された料理:', bestDish);
+  // 1. ラーメン判定（最優先、ただしriceがある場合は除外）
+  if ((hasWord(['ramen', 'ラーメン', 'noodle soup']) || 
+      (hasWord(['noodle', '麺']) && hasWord(['soup', 'broth', 'スープ']))) &&
+      !hasWord(['rice', 'ご飯'])) {
+    console.log('判定: ラーメン');
+    return 'ラーメン';
+  }
   
-  return bestDish;
+  // 2. カレー判定（キーワード追加）
+  if (hasWord(['curry', 'カレー', 'japanese curry', 'curry rice', 'goulash', 'chili']) ||
+      (hasWord(['curry']) && hasWord(['rice'])) ||
+      (hasWord(['goulash', 'chili']) && hasWord(['rice']))) {
+    console.log('判定: カレーライス');
+    return 'カレーライス';
+  }
+  
+  // 3. 牛丼判定（カレー系の単語を除外）
+  if (hasWord(['gyudon', '牛丼', 'beef bowl']) ||
+      (hasWord(['beef', '牛肉']) && hasWord(['rice', 'ご飯', 'bowl']) && 
+       !hasWord(['curry', 'noodle', 'goulash', 'chili']))) {
+    console.log('判定: 牛丼');
+    return '牛丼';
+  }
+  
+  // 4. からあげ判定
+  if (hasWord(['karaage', 'からあげ', '唐揚げ', 'fried chicken']) ||
+      (hasWord(['chicken']) && hasWord(['fried', '揚げ']))) {
+    console.log('判定: からあげ');
+    return 'からあげ';
+  }
+  
+  // 5. 天ぷら判定
+  if (hasWord(['tempura', '天ぷら', 'てんぷら'])) {
+    console.log('判定: 天ぷら');
+    return '天ぷら';
+  }
+  
+  // 6. とんかつ判定
+  if (hasWord(['tonkatsu', 'とんかつ', 'pork cutlet'])) {
+    console.log('判定: とんかつ');
+    return 'とんかつ';
+  }
+  
+  // 7. 親子丼判定
+  if (hasWord(['oyakodon', '親子丼']) ||
+      (hasWord(['chicken', 'egg']) && hasWord(['rice', 'bowl']))) {
+    console.log('判定: 親子丼');
+    return '親子丼';
+  }
+  
+  // その他の料理も追加可能...
+  
+  console.log('判定: 該当なし');
+  return null;
 }
 
 // 統合された画像分析関数
@@ -312,40 +270,20 @@ async function analyzeImage(imageUrl) {
         }
       });
     
-    // Google Visionから調理方法を推定
-    let cookingMethod = '生';
-    if (googleResults) {
-      const labels = googleResults.labels.map(l => l.description.toLowerCase());
-      if (labels.some(l => l.includes('fried') || l.includes('揚げ'))) {
-        cookingMethod = '揚げ';
-      } else if (labels.some(l => l.includes('grilled') || l.includes('焼'))) {
-        cookingMethod = '焼き';
-      } else if (labels.some(l => l.includes('boiled') || l.includes('煮'))) {
-        cookingMethod = '煮込み';
-      } else if (labels.some(l => l.includes('steamed') || l.includes('蒸'))) {
-        cookingMethod = '蒸し';
-      }
-    }
-    
-    // サイズを推定
-    let size = '中';
-    if (googleResults && googleResults.objects.length > 0) {
-      // オブジェクトの大きさから推定
-      const objectSize = googleResults.objects[0].boundingPoly;
-      const imageArea = (objectSize.normalizedVertices[2].x - objectSize.normalizedVertices[0].x) * 
-                       (objectSize.normalizedVertices[2].y - objectSize.normalizedVertices[0].y);
-      
-      if (imageArea > 0.6) size = '大';
-      else if (imageArea < 0.3) size = '小';
+    // デフォルト値
+    if (detectedFoods.length === 0) {
+      detectedFoods.push({
+        name: '食事',
+        confidence: 0.5
+      });
     }
     
     return {
       success: true,
       foods: detectedFoods,
       servingData: {
-        size: size,
-        dish: '皿',
-        cookingMethod: cookingMethod
+        size: '中',
+        dish: '皿'
       },
       topConfidence: detectedFoods[0]?.confidence || 0,
       apis: {
@@ -380,18 +318,15 @@ async function handleEvent(event) {
 
 📸 食事の写真を送ると：
 1. Google Vision + Clarifai で分析
-2. 日本料理も正確に認識
-3. 量を自動推定
-4. 調理方法を判定
-5. 詳細な栄養計算
-6. バランス評価
+2. 日本料理を正確に認識
+3. 詳細な栄養計算
+4. バランス評価
 
-🎯 認識精度が向上した料理：
-• からあげ、とんかつ
-• 牛丼、親子丼、カツ丼
-• カレーライス、ハヤシライス
+🎯 認識可能な料理：
 • ラーメン、うどん、そば
-• 天ぷら、お好み焼き
+• カレーライス、ハヤシライス
+• 牛丼、親子丼、カツ丼
+• からあげ、とんかつ、天ぷら
 • その他多数！
 
 💡 より正確な結果のコツ：
@@ -429,10 +364,10 @@ async function handleEvent(event) {
       });
     }
     
-    // 栄養情報を計算
+    // 栄養情報を計算（調理方法なしで）
     const nutrition = calculateNutrition(
       analysisResult.foods,
-      analysisResult.servingData.cookingMethod,
+      '生', // デフォルト値（表示はしない）
       analysisResult.servingData
     );
     
@@ -646,21 +581,7 @@ async function handleEvent(event) {
                 {
                   type: 'box',
                   layout: 'vertical',
-                  contents: [
-                    {
-                      type: 'text',
-                      text: '調理法',
-                      size: 'xs',
-                      color: '#555555'
-                    },
-                    {
-                      type: 'text',
-                      text: analysisResult.servingData.cookingMethod,
-                      size: 'sm',
-                      weight: 'bold',
-                      margin: 'xs'
-                    }
-                  ],
+                  contents: [],
                   flex: 1
                 }
               ]
